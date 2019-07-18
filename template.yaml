@@ -1,0 +1,260 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  linkshortener
+
+  Sample SAM Template for linkshortener
+
+Parameters:
+  STAGE:
+    Type: String
+    Description: Stage for deployment.
+    Default: "short"
+  DOMAIN:
+    Type: String
+    Description: Domain used for API
+    Default: "rboyd.dev"
+
+Resources:
+  LinkShortenerAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: "Link Shortener API"
+  ShortCodeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt LinkShortenerAPI.RootResourceId
+      PathPart: "{short_code}"
+      RestApiId: !Ref LinkShortenerAPI
+
+  GetBaseUrl:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - ShortCodeResource
+    Properties:
+      HttpMethod: GET
+      ResourceId: !GetAtt LinkShortenerAPI.RootResourceId
+      RestApiId: !Ref LinkShortenerAPI
+      AuthorizationType: NONE
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Content-Type: true
+          StatusCode: 200
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: |
+              {
+                  "statusCode": 200
+              }
+
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: |
+                  #set($context.responseOverride.header.content-type = "text/html")
+                  <html>
+                  <head>
+                    <script>
+                      function myFunction() {
+                        document.getElementById("demo").innerHTML = "please wait...";
+                        var x = document.getElementById("myText").value;
+                        const Http = new XMLHttpRequest();
+                        const url=`https://short.rboyd.dev/`;
+                        Http.open("POST", url);
+                        Http.send(JSON.stringify({ "url": "`\${x}`" }));
+                        Http.onreadystatechange = (e) => {
+                          console.log(Http.responseText)
+                          var jsonResponse = JSON.parse(Http.responseText);
+                          document.getElementById("demo").innerHTML = "https://short.rboyd.dev/"+jsonResponse.shortCode;
+                        }
+                  }
+                  </script>
+                  </head>
+                  <body>
+                    URL: <input type="text" id="myText" value="https://rboyd.dev">
+                    <br>
+                    <button onclick="myFunction()">Try it</button>
+                    <br>
+                    <p id="demo"></p>
+                  </body>
+                  </html>
+          - StatusCode: 500
+
+  GetResolvedUrl:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - ShortCodeResource
+    Properties:
+      HttpMethod: GET
+      ResourceId: !Ref ShortCodeResource
+      RestApiId: !Ref LinkShortenerAPI
+      AuthorizationType: NONE
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Location: true
+          StatusCode: 200
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Credentials:
+          Fn::GetAtt:
+            - DDBReadRole
+            - Arn
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/GetItem"
+        RequestTemplates:
+          application/json: !Sub
+            - |
+              {
+                  "TableName": "${tableName}",
+                  "Key": { "partitionKey": {"S": "$input.params('short_code')"}}
+              }
+            - tableName: !Ref ShortCodeTable
+
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: !Sub
+                - |
+                  #set($inputRoot = $input.path('$'))
+                  #set($item = $inputRoot.Item)
+                  #set($context.responseOverride.status = 307)
+                  #set($context.responseOverride.header.Location = "$item.sortKey.S")
+                - tableName: Richard
+          - StatusCode: 500
+
+  CreateResolvedUrl:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - ShortCodeResource
+    Properties:
+      HttpMethod: POST
+      ResourceId: !GetAtt LinkShortenerAPI.RootResourceId
+      RestApiId: !Ref LinkShortenerAPI
+      AuthorizationType: NONE
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: 200
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Credentials:
+          Fn::GetAtt:
+            - DDBReadRole
+            - Arn
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/PutItem"
+        RequestTemplates:
+          application/json: !Sub
+            - |
+              #set($inputRoot = $input.path('$'))
+              #set($id = $context.requestId.substring(0,8))
+              {
+                  "TableName": "${tableName}",
+                  "Item": { "partitionKey": {"S": "$id"}, "sortKey": {"S": "$inputRoot.url"}}
+              }
+            - tableName: !Ref ShortCodeTable
+
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: !Sub
+                - |
+                  #set($id = $context.requestId.substring(0,8))
+                  {"shortCode": "$id"}
+                - tableName: Richard
+          - StatusCode: 400
+            ResponseTemplates:
+              application/json: |
+                {"uh-oh": "Spaghetti-O's"}
+
+  DDBReadRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "apigateway.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+
+  ACMRegisterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./acm_register/
+      Handler: app.lambda_handler
+      Runtime: python3.7
+      Timeout: 900
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - acm:*
+                - route53:*
+                - lambda:Invoke*
+              Resource: '*'
+
+  ACMCertificate:
+    Type: 'Custom::ACMCertificate'
+    Version: '1.0'
+    Properties:
+      ServiceToken: !GetAtt ACMRegisterFunction.Arn
+      Region: !Ref "AWS::Region"
+      HostedZoneName: !Sub "${STAGE}.${DOMAIN}"
+
+  Deployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn:
+      - CreateResolvedUrl
+      - GetBaseUrl
+      - GetResolvedUrl
+    Properties:
+      RestApiId: !Ref LinkShortenerAPI
+      Description: My deployment
+      StageName: Prod
+
+  APIDomainName:
+    Type: AWS::ApiGateway::DomainName
+    Properties:
+      CertificateArn: !GetAtt ACMCertificate.Arn
+      DomainName: !Sub "${STAGE}.${DOMAIN}"
+
+  APIBasePathMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    DependsOn: Deployment
+    Properties:
+      DomainName: !Ref APIDomainName
+      RestApiId: !Ref LinkShortenerAPI
+      Stage: Prod
+  APIDomain:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneName: !Sub "${STAGE}.${DOMAIN}."
+      RecordSets:
+        - Name: !Sub "${STAGE}.${DOMAIN}"
+          Type: A
+          AliasTarget:
+            DNSName: !GetAtt APIDomainName.DistributionDomainName
+            HostedZoneId: !GetAtt APIDomainName.DistributionHostedZoneId
+
+  ShortCodeTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "partitionKey"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "partitionKey"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
