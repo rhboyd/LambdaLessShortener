@@ -53,33 +53,35 @@ Resources:
           - StatusCode: 200
             ResponseTemplates:
               application/json: |
-                  #set($context.responseOverride.header.content-type = "text/html")
-                  <html>
-                  <head>
-                    <script>
-                      function myFunction() {
-                        document.getElementById("demo").innerHTML = "please wait...";
-                        var x = document.getElementById("myText").value;
-                        const Http = new XMLHttpRequest();
-                        const url=`https://short.rboyd.dev/`;
-                        Http.open("POST", url);
-                        Http.send(JSON.stringify({ "url": "`\${x}`" }));
-                        Http.onreadystatechange = (e) => {
-                          console.log(Http.responseText)
-                          var jsonResponse = JSON.parse(Http.responseText);
-                          document.getElementById("demo").innerHTML = "https://short.rboyd.dev/"+jsonResponse.shortCode;
-                        }
-                  }
-                  </script>
-                  </head>
-                  <body>
-                    URL: <input type="text" id="myText" value="https://rboyd.dev">
-                    <br>
-                    <button onclick="myFunction()">Try it</button>
-                    <br>
-                    <p id="demo"></p>
-                  </body>
-                  </html>
+                #set($context.responseOverride.header.content-type = "text/html")
+                <html>
+                <head>
+                  <script>
+                    function myFunction() {
+                      document.getElementById("demo").innerHTML = "please wait...";
+                      var x = document.getElementById("myText").value;
+                      const Http = new XMLHttpRequest();
+                      const url=`https://short.rboyd.dev/`;
+                      Http.open("POST", url);
+                      var obj = {};
+                      obj["url"] = x;
+                      Http.send(JSON.stringify(obj));
+                      Http.onreadystatechange = (e) => {
+                        console.log(Http.responseText)
+                        var jsonResponse = JSON.parse(Http.responseText);
+                        document.getElementById("demo").innerHTML = "short.rboyd.dev/"+jsonResponse.shortCode;
+                      }
+                }
+                </script>
+                </head>
+                <body>
+                  URL: <input type="text" id="myText" value="https://rboyd.dev">
+                  <br>
+                  <button onclick="myFunction()">Try it</button>
+                  <br>
+                  <p id="demo"></p>
+                </body>
+                </html>
           - StatusCode: 500
 
   GetResolvedUrl:
@@ -106,6 +108,13 @@ Resources:
         Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/GetItem"
         RequestTemplates:
           application/json: !Sub
+            - |
+              {
+                  "TableName": "${tableName}",
+                  "Key": { "partitionKey": {"S": "$input.params('short_code')"}}
+              }
+            - tableName: !Ref ShortCodeTable
+          text/plain: !Sub
             - |
               {
                   "TableName": "${tableName}",
@@ -148,6 +157,15 @@ Resources:
         Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/PutItem"
         RequestTemplates:
           application/json: !Sub
+            - |
+              #set($inputRoot = $input.path('$'))
+              #set($id = $context.requestId.substring(0,8))
+              {
+                  "TableName": "${tableName}",
+                  "Item": { "partitionKey": {"S": "$id"}, "sortKey": {"S": "$inputRoot.url"}}
+              }
+            - tableName: !Ref ShortCodeTable
+          text/plain: !Sub
             - |
               #set($inputRoot = $input.path('$'))
               #set($id = $context.requestId.substring(0,8))
